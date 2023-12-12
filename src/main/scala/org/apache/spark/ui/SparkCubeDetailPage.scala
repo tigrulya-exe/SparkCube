@@ -31,7 +31,7 @@ class SparkCubeDetailPage(parent: SparkCubeTab)
   extends AbstractSparkCubePage(parent, "Detail") {
 
   override def render(request: HttpServletRequest): Seq[Node] = {
-    val parameterCacheId = UIUtils.stripXSS(request.getParameter("cacheId"))
+    val parameterCacheId = request.getParameter("cacheId")
     require(parameterCacheId != null && parameterCacheId.nonEmpty,
       "Missing cache id parameter")
 

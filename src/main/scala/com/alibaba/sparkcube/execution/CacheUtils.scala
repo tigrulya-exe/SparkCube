@@ -34,7 +34,7 @@ object CacheUtils {
     plan.find {
       case LogicalRelation(_, _, Some(catalogTable), _) =>
         catalogTable.identifier.equals(table)
-      case HiveTableRelation(catalogTable, _, _) =>
+      case HiveTableRelation(catalogTable, _, _, _, _) =>
         catalogTable.identifier.equals(table)
       case _ => false
     }.nonEmpty
@@ -62,7 +62,8 @@ object CacheUtils {
               if (alias.exprId == namedExpr.exprId) {
                 currentExpr = child match {
                   case ne: NamedExpression => ne
-                  case Cast(grandchild, _, _) if (grandchild.isInstanceOf[NamedExpression]) =>
+                  case Cast(grandchild, _, _, ansiEnabled)
+                    if (grandchild.isInstanceOf[NamedExpression] && ! ansiEnabled) =>
                     grandchild.asInstanceOf[NamedExpression]
                   case _ => currentExpr
                 }
@@ -86,7 +87,7 @@ object CacheUtils {
     plan.collect {
       case LogicalRelation(_, _, Some(catalogTable), _) =>
         catalogTable
-      case HiveTableRelation(catalogTable, _, _) =>
+      case HiveTableRelation(catalogTable, _, _, _, _) =>
         catalogTable
     }
   }

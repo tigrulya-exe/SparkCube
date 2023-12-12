@@ -17,11 +17,9 @@
 
 package com.alibaba.sparkcube.execution
 
-import com.swoop.alchemy.spark.expressions.hll.HyperLogLogInitSimpleAgg
-
 import org.apache.spark.sql.{SparkAgent, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{BitSetMapping, PreApproxCountDistinct, PreCountDistinct}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BitSetMapping, PreCountDistinct}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -40,8 +38,6 @@ case class PreCountDistinctTransformer(
             false)(NamedExpression.newExprId, Seq.empty[String])
           relatedFields += PreCountDistExprInfo(childExpr, deAttr)
           BitSetMapping(deAttr)
-        case PreApproxCountDistinct(childExpr, relativeSD) =>
-          HyperLogLogInitSimpleAgg(childExpr, relativeSD)
       }.withNewChildren {
         val dictionaries = relatedFields.map {
           case PreCountDistExprInfo(childExpr, encodedAttr) =>
@@ -71,7 +67,7 @@ case class PreCountDistinctTransformer(
             val encodedAttr = dict._2._2
             val map = dict._1
             Project(joined.output :+ encodedAttr, Join(joined, map, Inner,
-              Some(EqualTo(childExpr, map.projectList(0)))))
+              Some(EqualTo(childExpr, map.projectList(0))), JoinHint.NONE))
         }
 
         Seq(result)

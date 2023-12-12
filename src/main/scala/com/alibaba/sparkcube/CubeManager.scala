@@ -584,10 +584,6 @@ class CubeManager extends Logging {
       case "PRE_COUNT_DISTINCT" | "Pre_Count_Distinct" | "pre_count_distinct" =>
         SparkAgent.createColumn(
           toAlias(PreCountDistinct(col(measure.column).expr).toAggregateExpression, measure))
-      case "PRE_APPROX_COUNT_DISTINCT" | "Pre_Approx_Count_Distinct" |
-           "pre_approx_count_distinct" =>
-        SparkAgent.createColumn(toAlias(
-          PreApproxCountDistinct(col(measure.column).expr).toAggregateExpression, measure))
       case other: String =>
         throw SparkAgent.analysisException(s"Function $other is not support for pre calculation.")
     }

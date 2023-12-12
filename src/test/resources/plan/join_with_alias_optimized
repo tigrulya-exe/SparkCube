@@ -1,0 +1,5 @@
+Project [group_name#183, num_count#188L]
++- Join Inner, (group#187 = group_name#183)
+   :- LocalRelation [group_name#183]
+   +- Filter isnotnull(group#187)
+      +- Relation [group#187,num_count#188L] orc

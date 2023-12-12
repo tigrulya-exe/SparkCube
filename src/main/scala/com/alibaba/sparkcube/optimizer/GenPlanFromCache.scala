@@ -19,7 +19,6 @@ package com.alibaba.sparkcube.optimizer
 
 import scala.math.min
 
-import com.swoop.alchemy.spark.expressions.hll.{HyperLogLogCardinality, HyperLogLogMerge}
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.{CubeSharedState, SparkAgent, SparkSession}
@@ -33,6 +32,7 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.command.DataWritingCommand
 import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.v2.FileDataSourceV2
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -91,7 +91,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
           treeMatching(child).map(newPlan => gl.withNewChildren(Seq(newPlan)))
         case ll @ LocalLimit(_, child) =>
           treeMatching(child).map(newPlan => ll.withNewChildren(Seq(newPlan)))
-        case j @ Join(left, right, _, _) =>
+        case j @ Join(left, right, _, _, _) =>
           (treeMatching(left), treeMatching(right)) match {
             case (Nil, planSeq) => planSeq.map(p => j.withNewChildren(Seq(left, p)))
             case (planSeq, Nil) => planSeq.map(p => j.withNewChildren(Seq(p, right)))
@@ -101,7 +101,9 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
           }
         case a @ Aggregate(_, _, child) =>
           treeMatching(child).map(newPlan => a.withNewChildren(Seq(newPlan)))
-        case u @ Union(children) =>
+        case s @ SubqueryAlias(_, child) =>
+          treeMatching(child).map(newPlan => s.withNewChildren(Seq(newPlan)))
+        case u @ Union(children, _, _) =>
           val allMatching = children.map(oldPlan => treeMatching(oldPlan))
           if (allMatching.exists(_.nonEmpty)) {
             // TODO lose some potentials
@@ -122,18 +124,19 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
     case Aggregate(_, _, Expand(_, _, PhysicalOperation(_, _, _))) =>
       // TODO real CUBE support
       Nil
-    case Aggregate(ge, ae, p @ PhysicalOperation(fields, filters, t @ TableLike(ident)))
+    case Aggregate(groupings, aggregates,
+      p @ PhysicalOperation(fields, filters, t @ TableLike(ident)))
       if cm.isCached(session, ident.toString) =>
       val cacheOpt = cm.getViewCacheInfo(session, ident.toString)
       cacheOpt match {
         case Some(CacheInfo(_, Some(cube))) if cube.enableRewrite =>
           // for this kind of matching, we need everything from filters in dims,
           // and every ge in dims. Anything else should be in measures.
-          val needs = ge.flatMap(_.references) ++ filters.flatMap(_.references)
+          val needs = groupings.flatMap(_.references) ++ filters.flatMap(_.references)
           // TODO don't support actual project underneath this aggregate
-          if (needs.forall(r => cube.cacheSchema.dims.contains(r.name)) && p.output == t.output) {
-            scanCubePlan(
-              cube, ident, plan.output, p.output, t.output, ge, ae, filters, fields).toSeq
+          if (needs.forall(r => containsDim(cube.cacheSchema, r.name)) && p.output == t.output) {
+            scanCubePlan(cube, ident, plan.output, p.output,
+              t.output, groupings, aggregates, filters, fields).toSeq
           } else {
             Nil
           }
@@ -222,122 +225,124 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
     val foundRefs = filterRefs.map(att =>
       cache.cacheSchema.dims.find(dim => dim.equalsIgnoreCase(att.name)))
     if (foundRefs.exists(_.isEmpty)) {
-      None
+      return None
+    }
+    val storage = cache.getStorageInfo
+    // get metadata from view/table
+    val meta = session.sessionState.catalog.getTableMetadata(table)
+    // Note: partitionSchema is always empty in view, but actual data can still have partition
+    // schema and a different data schema
+    val allFields = meta.dataSchema
+    // TODO matching col in better way
+    val partitionSchema = StructType(storage.partitionSpec.getOrElse(Nil).map(pf =>
+      allFields.find(f => pf.equalsIgnoreCase(f.name)).get))
+    // TODO matching col in better way
+    val allSchema = cache.cacheSchema.dims.map(df =>
+      StructField(df, allFields.find(_.name.equalsIgnoreCase(df)).get.dataType)) ++
+      cache.cacheSchema.measures.map(m =>
+        StructField(m.name, getDataType(
+          m.func, allFields.find(_.name.equalsIgnoreCase(m.column)).get.dataType)))
+    val dataSchema = StructType(allSchema.filterNot(s =>
+      partitionSchema.fields.map(_.name).contains(s.name)))
+
+    val formatClass = DataSource.lookupDataSource(storage.provider, SparkAgent.getConf(session))
+    // TODO use new data source api
+    val dataSource = formatClass.newInstance().asInstanceOf[FileDataSourceV2]
+    val format = dataSource.fallbackFileFormat.newInstance()
+
+    val userSchemaOpt = Some(StructType(dataSchema.fields ++ partitionSchema.fields))
+    val index = new InMemoryFileIndex(
+      session, Seq(new Path(storage.storagePath)), Map.empty, userSchemaOpt)
+    val lr = LogicalRelation(HadoopFsRelation(
+      index, partitionSchema, dataSchema, storage.bucketSpec, format, Map.empty)(session), false)
+    // make sure the raw output is dims ... measures
+    val raw = Project(allSchema.map(sf =>
+      Alias(lr.output.find(_.name.equalsIgnoreCase(sf.name)).get, sf.name)()), lr)
+    // TODO matching col in better way
+    val replaceMap = tabOut.map(att => (att, raw.outputSet.find(rawAtt =>
+      rawAtt.name.equalsIgnoreCase(att.name)))).filter(_._2.isDefined).map(p =>
+      (p._1, p._2.get)).toMap
+    val newFilters = filters.map(transformExpr(_, replaceMap))
+    val base = if (newFilters.nonEmpty) {
+      val cond = newFilters.reduce(And)
+      Filter(cond, raw)
     } else {
-      val storage = cache.getStorageInfo
-      // get metadata from view/table
-      val meta = session.sessionState.catalog.getTableMetadata(table)
-      // Note: partitionSchema is always empty in view, but actual data can still have partition
-      // schema and a different data schema
-      val allFields = meta.dataSchema
-      // TODO matching col in better way
-      val partitionSchema = StructType(storage.partitionSpec.getOrElse(Nil).map(pf =>
-        allFields.find(f => pf.equalsIgnoreCase(f.name)).get))
-      // TODO matching col in better way
-      val allSchema = cache.cacheSchema.dims.map(df =>
-        StructField(df, allFields.find(_.name.equalsIgnoreCase(df)).get.dataType)) ++
-        cache.cacheSchema.measures.map(m =>
-          StructField(m.name, getDataType(
-            m.func, allFields.find(_.name.equalsIgnoreCase(m.column)).get.dataType)))
-      val dataSchema = StructType(allSchema.filterNot(s =>
-        partitionSchema.fields.map(_.name).contains(s.name)))
-      val formatClass = DataSource.lookupDataSource(storage.provider, SparkAgent.getConf(session))
-      val format = formatClass.newInstance().asInstanceOf[FileFormat]
-      val userSchemaOpt = Some(StructType(dataSchema.fields ++ partitionSchema.fields))
-      val index = new InMemoryFileIndex(
-        session, Seq(new Path(storage.storagePath)), Map.empty, userSchemaOpt)
-      val lr = LogicalRelation(HadoopFsRelation(
-        index, partitionSchema, dataSchema, storage.bucketSpec, format, Map.empty)(session), false)
-      // make sure the raw output is dims ... measures
-      val raw = Project(allSchema.map(sf =>
-        Alias(lr.output.find(_.name.equalsIgnoreCase(sf.name)).get, sf.name)()), lr)
-      // TODO matching col in better way
-      val replaceMap = tabOut.map(att => (att, raw.outputSet.find(rawAtt =>
-        rawAtt.name.equalsIgnoreCase(att.name)))).filter(_._2.isDefined).map(p =>
-        (p._1, p._2.get)).toMap
-      val newFilters = filters.map(transformExpr(_, replaceMap))
-      val base = if (newFilters.nonEmpty) {
-        val cond = newFilters.reduce(And)
-        Filter(cond, raw)
+      raw
+    }
+    // we are not doing project right here because the Project is underneath the replaced
+    // Aggregate node, should carry it outside
+    if (cache.cacheSchema.dims.forall(dim =>
+      grouping.flatMap(_.references).exists(_.name.equalsIgnoreCase(dim))) &&
+      grouping.forall(_.references.size == 1)) {
+      // no need for re-aggr because the grouping are same
+      val proj = aggregating.map(agg =>
+        buildAggr(agg, base, cache.cacheSchema, reAggr = false).map(
+          _.asInstanceOf[NamedExpression]))
+      if (proj.forall(_.isDefined)) {
+        val origin = Project(
+          proj.flatten.map(transformExpr(_, replaceMap).asInstanceOf[NamedExpression]), base)
+        val bounding =
+          origin.output.zip(out).map(pair => Alias(pair._1, pair._2.name)(pair._2.exprId))
+        Some(Project(bounding, origin))
       } else {
-        raw
+        None
       }
-      // we are not doing project right here because the Project is underneath the replaced
-      // Aggregate node, should carry it outside
-      if (cache.cacheSchema.dims.forall(dim =>
-        grouping.flatMap(_.references).exists(_.name.equalsIgnoreCase(dim))) &&
-        grouping.forall(_.references.size == 1)) {
-        // no need for re-aggr because the grouping are same
-        val proj = aggregating.map(agg =>
-          buildAggr(agg, base, cache.cacheSchema, reAggr = false).map(
-            _.asInstanceOf[NamedExpression]))
-        if (proj.forall(_.isDefined)) {
-          val origin = Project(
-            proj.flatten.map(transformExpr(_, replaceMap).asInstanceOf[NamedExpression]), base)
-          val bounding =
-            origin.output.zip(out).map(pair => Alias(pair._1, pair._2.name)(pair._2.exprId))
-          Some(Project(bounding, origin))
-        } else {
-          None
-        }
+    } else {
+      // need re-aggr
+      val newAggrs = aggregating.map(agg =>
+        buildAggr(agg, base, cache.cacheSchema, reAggr = true).map(
+          transformExpr(_, replaceMap)).map(
+          _.asInstanceOf[NamedExpression]))
+      if (newAggrs.exists(_.isEmpty)) {
+        None
       } else {
-        // need re-aggr
-        val newAggrs = aggregating.map(agg =>
-          buildAggr(agg, base, cache.cacheSchema, reAggr = true).map(
-            transformExpr(_, replaceMap)).map(
-            _.asInstanceOf[NamedExpression]))
-        if (newAggrs.exists(_.isEmpty)) {
-          None
-        } else {
-          val finalAggrPairs = newAggrs.flatten.map {
-            exp =>
-              val funcs = exp.collect { case f: FuncPlaceHolder => f }
-              if (funcs.length > 1) {
-                logDebug("Not support this kind of expression")
-                return None
-              }
-              funcs.headOption match {
-                case None => (None, Seq(exp))
-                case Some(d @ DivideAfter(sume, cnte, _, _)) =>
-                  (Some(ReDivide(exp)), Seq(
-                    Alias(sume, d.name + "_sum")(),
-                    Alias(cnte, d.name + "_cnt")()))
-                case Some(c @ CardinalityAfter(buffer, _, _)) =>
-                  (Some(ReCardinality(exp)), Seq(Alias(buffer, c.name + "_card")()))
-              }
-          }
-          val firstAgg = Aggregate(
-            grouping.map(ge => transformExpr(ge, replaceMap).asInstanceOf[NamedExpression]),
-            finalAggrPairs.flatMap(_._2), base)
-          val listExpr = finalAggrPairs.map { aggr =>
-            aggr._1 match {
-              case None => aggr._2.head.toAttribute
-              case Some(ReDivide(originAttr)) =>
-                val attrs = aggr._2.map(_.toAttribute)
-                originAttr.transform {
-                  case _: DivideAfter => attrs.head.dataType match {
-                    case DoubleType =>
-                      Divide(attrs(0), Cast(attrs(1), DoubleType))
-                    case dec: DecimalType =>
-                      Divide(attrs(0), Cast(attrs(1), dec))
-                    case _ =>
-                      Divide(Cast(attrs(0), DoubleType), Cast(attrs(1), DoubleType))
-                  }
-                }.asInstanceOf[NamedExpression]
-              case Some(ReCardinality(originAttr)) =>
-                val attrs = aggr._2.map(_.toAttribute)
-                originAttr.transform {
-                  case _: CardinalityAfter => HyperLogLogCardinality(attrs.head)
-                }.asInstanceOf[NamedExpression]
-              case e => throw new UnsupportedOperationException("Unknown expression:" + e)
+        val finalAggrPairs = newAggrs.flatten.map {
+          exp =>
+            val funcs = exp.collect { case f: FuncPlaceHolder => f }
+            if (funcs.length > 1) {
+              logDebug("Not support this kind of expression")
+              return None
             }
-          }
-          val bounding =
-            listExpr.zip(out).map(pair => Alias(pair._1.toAttribute, pair._2.name)(pair._2.exprId))
-          Some(Project(bounding, Project(listExpr, firstAgg)))
+            funcs.headOption match {
+              case None => (None, Seq(exp))
+              case Some(d@DivideAfter(sume, cnte, _, _)) =>
+                (Some(ReDivide(exp)), Seq(
+                  Alias(sume, d.name + "_sum")(),
+                  Alias(cnte, d.name + "_cnt")()))
+              case Some(c@CardinalityAfter(buffer, _, _)) =>
+                (Some(ReCardinality(exp)), Seq(Alias(buffer, c.name + "_card")()))
+            }
         }
+        val firstAgg = Aggregate(
+          grouping.map(ge => transformExpr(ge, replaceMap).asInstanceOf[NamedExpression]),
+          finalAggrPairs.flatMap(_._2), base)
+        val listExpr = finalAggrPairs.map { aggr =>
+          aggr._1 match {
+            case None => aggr._2.head.toAttribute
+            case Some(ReDivide(originAttr)) =>
+              val attrs = aggr._2.map(_.toAttribute)
+              originAttr.transform {
+                case _: DivideAfter => attrs.head.dataType match {
+                  case DoubleType =>
+                    Divide(attrs(0), Cast(attrs(1), DoubleType))
+                  case dec: DecimalType =>
+                    Divide(attrs(0), Cast(attrs(1), dec))
+                  case _ =>
+                    Divide(Cast(attrs(0), DoubleType), Cast(attrs(1), DoubleType))
+                }
+              }.asInstanceOf[NamedExpression]
+            case e => throw new UnsupportedOperationException("Unknown expression:" + e)
+          }
+        }
+        val bounding =
+          listExpr.zip(out).map(pair => Alias(pair._1.toAttribute, pair._2.name)(pair._2.exprId))
+        Some(Project(bounding, Project(listExpr, firstAgg)))
       }
     }
+  }
+
+  private def containsDim(cacheSchema: CacheCubeSchema, field: String): Boolean = {
+    cacheSchema.dims.exists(_.equalsIgnoreCase(field))
   }
 
   private def transformExpr(
@@ -352,7 +357,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
       cube: CacheCubeSchema,
       reAggr: Boolean): Option[Expression] = {
     agg match {
-      case AggregateExpression(af, mode, isDistinct, resultId) =>
+      case AggregateExpression(af, mode, isDistinct, _, resultId) =>
         (af, isDistinct) match {
           case (Count(Seq(exp)), true) if reAggr =>
             // count distinct re-aggr
@@ -362,7 +367,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
             val cntBuffer =
               buildAggrExpr(exp, reAggr, mode, false, resultId, "pre_count_distinct", cube, base)
             cntBuffer.map(BitSetCardinality)
-          case (a @ Average(exp), false) =>
+          case (a @ Average(exp, _), false) =>
             // avg
             if (reAggr) {
               val sum = buildAggrExpr(exp, reAggr, mode, isDistinct, resultId, "sum", cube, base)
@@ -395,7 +400,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
                 avg
               }
             }
-          case (Sum(exp), false) =>
+          case (Sum(exp, _), false) =>
             buildAggrExpr(exp, reAggr, mode, isDistinct, resultId, "sum", cube, base)
           case (Count(exp), false) =>
             buildAggrExpr(exp.head, reAggr, mode, isDistinct, resultId, "count", cube, base)
@@ -403,21 +408,6 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
             buildAggrExpr(exp, reAggr, mode, isDistinct, resultId, "min", cube, base)
           case (Max(exp), _) =>
             buildAggrExpr(exp, reAggr, mode, isDistinct, resultId, "max", cube, base)
-          case (hll: HyperLogLogPlusPlus, _) =>
-            val newHll = buildAggrExpr(
-              hll.child, reAggr, mode, isDistinct,
-              resultId, "pre_approx_count_distinct", cube, base, Some(hll))
-            newHll match {
-              case Some(AggregateExpression(_: HyperLogLogPlusPlus, _, _, _)) =>
-                newHll
-              case Some(other) =>
-                if (reAggr) {
-                  Some(CardinalityAfter(other, hll.toString))
-                } else {
-                  Some(HyperLogLogCardinality(other))
-                }
-              case _ => None
-            }
         }
       case other if other.children.nonEmpty =>
         val childrenTrans = other.children.map(buildAggr(_, base, cube, reAggr))
@@ -466,12 +456,11 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
       resultId: ExprId,
       funcName: String,
       cube: CacheCubeSchema,
-      base: LogicalPlan,
-      hll: Option[HyperLogLogPlusPlus] = None): Option[Expression] = {
+      base: LogicalPlan): Option[Expression] = {
     if (reAggr) {
       val findOpt = findRefInBase(exp, funcName, cube, base)
       findOpt.map(pair => AggregateExpression(buildAggrFunc(
-        Seq(pair._1), funcName, pair._2, hll), mode, !pair._2 && isDistinct, resultId))
+        Seq(pair._1), funcName, pair._2), mode, !pair._2 && isDistinct, None, resultId))
       // if promote, distinct is non-sense
     } else {
       val oldRef = exp.references.toSeq
@@ -493,8 +482,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
   private[optimizer] def buildAggrFunc(
       args: Seq[Expression],
       func: String,
-      promo: Boolean,
-      hll: Option[HyperLogLogPlusPlus] = None): AggregateFunction = func.toLowerCase match {
+      promo: Boolean): AggregateFunction = func.toLowerCase match {
     case "max" => Max(args.head)
     case "min" => Min(args.head)
     case "count" if promo => Sum(args.head)
@@ -503,17 +491,6 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
     case "avg" => Average(args.head)
     case "pre_count_distinct" if promo => ReCountDistinct(args.head)
     case "pre_count_distinct" if !promo => Count(args)
-    case "pre_approx_count_distinct" if promo =>
-      assert(hll.isDefined)
-      val hllpp = hll.get
-      HyperLogLogMerge(args.head, hllpp.mutableAggBufferOffset, hllpp.inputAggBufferOffset)
-    case "pre_approx_count_distinct" if !promo =>
-      assert(hll.isDefined)
-      val hllpp = hll.get
-      HyperLogLogPlusPlus(
-        args.head, hllpp.relativeSD, hllpp.mutableAggBufferOffset, hllpp.inputAggBufferOffset)
-    // case "pre_approx_count_distinct" if promo => PreApproxCountDistinct(args.head)
-    // already handled pre_approx_count_distinct outside
     case _ => throw new UnsupportedOperationException("Unknown function") // should never be here
   }
 
@@ -536,8 +513,7 @@ case class GenPlanFromCache(session: SparkSession) extends Rule[LogicalPlan]
   private[optimizer] def getDataType(func: String, arg: DataType): DataType =
     (func.toLowerCase, arg) match {
       case ("count", _) => LongType
-      case (fn, _) if Seq("pre_count_distinct", "pre_approx_count_distinct").contains(fn) =>
-        BinaryType
+      case ("pre_count_distinct", _) => BinaryType
       case (fn, _) if Seq("min", "max").contains(fn) => arg
       case ("sum", SparkAgent.DecimalResolve(precision, scale)) =>
         SparkAgent.createDecimal(precision + 10, scale)
@@ -568,6 +544,14 @@ case class DivideAfter(
     name: String,
     exprId: ExprId = NamedExpression.newExprId) extends FuncPlaceHolder {
   override def children: Seq[Expression] = Seq(sume, cnte)
+
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[Expression]): Expression = {
+    if (newChildren.length != 2) {
+      throw new IllegalArgumentException("Wrong number of children")
+    }
+    DivideAfter(newChildren(0), newChildren(1), name, exprId)
+  }
 }
 
 /**
@@ -578,6 +562,14 @@ case class CardinalityAfter(
     name: String,
     exprId: ExprId = NamedExpression.newExprId) extends FuncPlaceHolder {
   override def children: Seq[Expression] = Seq(buffer)
+
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[Expression]): Expression = {
+    if (newChildren.length != 1) {
+      throw new IllegalArgumentException("Wrong number of children")
+    }
+    CardinalityAfter(newChildren.head, name, exprId)
+  }
 }
 
 sealed trait FuncPlaceHolder extends NamedExpression {
@@ -593,7 +585,7 @@ sealed trait FuncPlaceHolder extends NamedExpression {
 
 object TableLike {
   def unapply(plan: LogicalPlan): Option[TableIdentifier] = plan match {
-    case HiveTableRelation(tableMeta, _, _) => Some(tableMeta.identifier)
+    case HiveTableRelation(tableMeta, _, _, _, _) => Some(tableMeta.identifier)
     case View(catalogTable, _, _) => Some(catalogTable.identifier)
     case LogicalRelation(_, _, Some(catalogTable), _) => Some(catalogTable.identifier)
     case SubqueryAlias(_, TableLike(ident)) => Some(ident)

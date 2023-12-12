@@ -1,0 +1,7 @@
+Join Inner, (join_id#74 = cast(group#43 as int))
+:- Project [join_id#74]
+:  +- LocalRelation <empty>, [join_id#74]
++- Project [group#77 AS group#43, num_count#73L AS num_count#73L]
+   +- Project [group#77, num_count#78L AS num_count#73L]
+      +- Project [group#75 AS group#77, num_count#76L AS num_count#78L]
+         +- Relation [group#75,num_count#76L] orc

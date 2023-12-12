@@ -21,7 +21,6 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, Da
 
 import org.roaringbitmap.RoaringBitmap
 
-import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
@@ -88,6 +87,11 @@ case class BitSetMapping(
   override def eval(bitSet: RoaringBitmap): Any = {
     serialize(bitSet)
   }
+
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[Expression]): Expression = {
+    copy(child = newChildren.head)
+  }
 }
 
 /**
@@ -140,6 +144,11 @@ case class PreCountDistinct(
   override def dataType: DataType = BinaryType
 
   override def children: Seq[Expression] = Seq(child)
+
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[Expression]): Expression = {
+    copy(child = newChildren.head)
+  }
 }
 
 /**
@@ -201,6 +210,11 @@ case class ReCountDistinct(
   override def eval(bitset: RoaringBitmap): Long = {
     bitset.getLongCardinality
   }
+
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[Expression]): Expression = {
+    copy(child = newChildren.head)
+  }
 }
 
 trait ImperativeAggregateWithRoaringBitmap extends TypedImperativeAggregate[RoaringBitmap] {
@@ -245,81 +259,8 @@ case class BitSetCardinality(override val child: Expression)
   }
 
   override def prettyName: String = "bitset_cardinality"
-}
 
-/**
- * Generate a HyperLogLog which contains all the distinct encoded values, so that its result can be
- * used to do re-aggregation for approx_count_distinct. It's just a placeholder, as
- * PreCountDistinctTransformer rule would rewrite this with HyperLogLogInitSimpleAgg and
- * DictionaryEncode. This function should only be used in CACHE TABLE DDL.
- */
-@ExpressionDescription(
-  usage = """
-    _FUNC_(expr) - Just a placeholder, should be replaced with DictionEncoding and
-    HyperLogLogInitSimpleAgg in optimizer.
-  """)
-case class PreApproxCountDistinct(
-    child: Expression,
-    relativeSD: Double = 0.05)
-  extends ImperativeAggregate with ImplicitCastInputTypes {
-
-  def this(child: Expression) = {
-    this(child = child, relativeSD = 0.05)
-  }
-
-  def this(child: Expression, relativeSD: Expression) = {
-    this(child = child, relativeSD = CacheFunctionUtil.validateDoubleLiteral(relativeSD))
-  }
-
-  var dictionaryPath: String = _
-
-  override protected val inputAggBufferOffset: Int = 0
-
-  override protected val mutableAggBufferOffset: Int = 0
-
-  override def prettyName: String = "pre_approx_count_distinct"
-
-  override def withNewMutableAggBufferOffset(newMutableAggBufferOffset: Int): ImperativeAggregate =
-    this
-
-  override def withNewInputAggBufferOffset(newInputAggBufferOffset: Int): ImperativeAggregate = this
-
-  override def update(mutableAggBuffer: InternalRow, inputRow: InternalRow): Unit = {}
-
-  override def merge(mutableAggBuffer: InternalRow, inputAggBuffer: InternalRow): Unit = {}
-
-  override def aggBufferSchema: StructType = StructType.fromAttributes(aggBufferAttributes)
-
-  override def aggBufferAttributes: Seq[AttributeReference] = {Seq.empty[AttributeReference]}
-
-  override def inputAggBufferAttributes: Seq[AttributeReference] = {Seq.empty[AttributeReference]}
-
-  override def inputTypes: Seq[AbstractDataType] =
-    Seq(TypeCollection(StringType, BinaryType, NumericType))
-
-  override def nullable: Boolean = false
-
-  override def eval(input: InternalRow): Any = {}
-
-  override def dataType: DataType = BinaryType
-
-  override def children: Seq[Expression] = Seq(child)
-
-  override def initialize(mutableAggBuffer: InternalRow): Unit = {}
-}
-
-object CacheFunctionUtil{
-
-  def validateDoubleLiteral(exp: Expression): Double = exp match {
-    case Literal(d: Double, DoubleType) => d
-    case Literal(dec: Decimal, _) => dec.toDouble
-    case _ =>
-      throw new AnalysisException("The second argument should be a double literal.")
-  }
-
-  def validateIntLiteral(exp: Expression): Int = exp match {
-    case Literal(d: Int, IntegerType) => d
-    case _ =>
-      throw new AnalysisException("The second argument should be a int literal.")
+  override protected def withNewChildInternal(newChild: Expression): Expression = {
+    copy(child = newChild)
   }
 }

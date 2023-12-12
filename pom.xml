@@ -8,40 +8,38 @@
     <artifactId>sparkcube</artifactId>
     <version>0.4.0-SNAPSHOT</version>
 
-    <repositories>
-        <repository>
-            <id>swoop-inc</id>
-            <url>https://dl.bintray.com/swoop-inc/maven/</url>
-        </repository>
-    </repositories>
+    <properties>
+        <spark.version>3.3.2</spark.version>
+        <scala.version>2.13.8</scala.version>
+        <scala.binaryVersion>2.13</scala.binaryVersion>
+        <jackson.version>2.13.4</jackson.version>
+        <jackson.databind.version>2.13.4.2</jackson.databind.version>
+        <jetty.version>9.4.48.v20220622</jetty.version>
+        <scalatest.version>3.2.17</scalatest.version>
+        <spark.shade.packageName>org.sparkproject</spark.shade.packageName>
+        <java.version>1.8</java.version>
+    </properties>
 
     <dependencies>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.6.7.3</version>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>com.fasterxml.jackson.jaxrs</groupId>
-            <artifactId>jackson-jaxrs-json-provider</artifactId>
-            <version>2.5.4</version>
+            <version>${jackson.databind.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
-            <version>2.6.7</version>
+            <version>${jackson.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.6.7</version>
+            <version>${jackson.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -55,21 +53,15 @@
         <dependency>
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-compiler</artifactId>
-            <version>2.11.12</version>
+            <version>${scala.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>org.scalatest</groupId>
-            <artifactId>scalatest_2.11</artifactId>
-            <version>3.0.3</version>
+            <artifactId>scalatest_${scala.binaryVersion}</artifactId>
+            <version>${scalatest.version}</version>
             <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>com.swoop</groupId>
-            <artifactId>spark-alchemy_2.11</artifactId>
-            <version>0.3.28</version>
         </dependency>
 
         <dependency>
@@ -88,85 +80,49 @@
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-sql_2.11</artifactId>
+            <artifactId>spark-sql_${scala.binaryVersion}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-hive_2.11</artifactId>
+            <artifactId>spark-hive_${scala.binaryVersion}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency> <!-- Spark dependency -->
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-core_2.11</artifactId>
+            <artifactId>spark-core_${scala.binaryVersion}</artifactId>
+            <version>${spark.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency> <!-- Spark dependency -->
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binaryVersion}</artifactId>
+            <version>${spark.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency> <!-- Spark dependency -->
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-catalyst_${scala.binaryVersion}</artifactId>
             <version>${spark.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
-    <properties>
-        <jetty.version>9.4.27.v20200227</jetty.version>
-        <spark.version>2.4.4</spark.version>
-    </properties>
-
-    <profiles>
-        <profile>
-            <id>spark-2.4</id>
-            <!-- default config -->
-        </profile>
-        <profile>
-            <id>spark-2.3.4</id>
-            <properties>
-                <spark.version>2.3.4</spark.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.3.3</id>
-            <properties>
-                <spark.version>2.3.3</spark.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.3.2</id>
-            <properties>
-                <spark.version>2.3.2</spark.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.3.1</id>
-            <properties>
-                <spark.version>2.3.1</spark.version>
-                <jetty.version>9.3.20.v20170531</jetty.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.3.0</id>
-            <properties>
-                <spark.version>2.3.0</spark.version>
-                <jetty.version>9.3.20.v20170531</jetty.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.2</id>
-            <properties>
-                <spark.version>2.2.3</spark.version>
-                <jetty.version>9.3.11.v20160721</jetty.version>
-            </properties>
-        </profile>
-    </profiles>
-
     <build>
         <plugins>
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
-                <!-- 3.3.1 won't work with zinc; fails to find javac from java.home -->
-                <version>3.2.2</version>
+                <version>4.4.0</version>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
@@ -182,15 +138,16 @@
                     </execution>
                 </executions>
                 <configuration>
-                    <scalaVersion>2.11.12</scalaVersion>
+                    <scalaVersion>${scala.version}</scalaVersion>
+                    <checkMultipleScalaVersions>true</checkMultipleScalaVersions>
+                    <failOnMultipleScalaVersions>true</failOnMultipleScalaVersions>
                     <recompileMode>incremental</recompileMode>
-                    <useZincServer>true</useZincServer>
                     <args>
                         <arg>-unchecked</arg>
                         <arg>-deprecation</arg>
                         <arg>-feature</arg>
                         <arg>-explaintypes</arg>
-                        <arg>-Yno-adapted-args</arg>
+                        <arg>-target:jvm-1.8</arg>
                     </args>
                     <jvmArgs>
                         <jvmArg>-Xms1024m</jvmArg>
@@ -204,6 +161,17 @@
                         <javacArg>${java.version}</javacArg>
                         <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
                     </javacArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <skipMain>true</skipMain> <!-- skip compile -->
+                    <skip>true</skip> <!-- skip testCompile -->
                 </configuration>
             </plugin>
             <plugin>
@@ -314,7 +282,7 @@
                             <relocations>
                                 <relocation>
                                     <pattern>org.eclipse.jetty</pattern>
-                                    <shadedPattern>org.spark_project.jetty</shadedPattern>
+                                    <shadedPattern>${spark.shade.packageName}.jetty</shadedPattern>
                                     <includes>
                                         <include>org.eclipse.jetty.**</include>
                                     </includes>

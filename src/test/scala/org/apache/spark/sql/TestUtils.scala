@@ -17,19 +17,23 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.{SparkContext, SparkFunSuite}
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 
-class CubeSharedStateSuite extends SparkFunSuite {
+import org.apache.spark.util.Utils
 
-  override protected def afterAll(): Unit = {
-    SparkContext.getOrCreate().stop()
-    SparkSession.clearActiveSession()
-    SparkSession.clearDefaultSession()
+object TestUtils {
+  def createTempDir(namePrefix: String = "spark_cache"): File = {
+    Utils.createTempDir(namePrefix = namePrefix)
   }
 
-  test("sharedState init") {
-    val session = SparkSession.builder().master("local").getOrCreate()
-    assert(CubeSharedState.get(session) != null)
+  def deleteDirectory(file: File): Unit = {
+    Utils.deleteRecursively(file)
   }
 
+  def readPlanFromResources(planName: String): String = {
+    val planPath = Paths.get(getClass.getClassLoader.getResource(s"plan/$planName").getPath)
+    new String(Files.readAllBytes(planPath), StandardCharsets.UTF_8)
+  }
 }

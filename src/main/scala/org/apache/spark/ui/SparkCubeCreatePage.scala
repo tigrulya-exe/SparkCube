@@ -84,13 +84,13 @@ class SparkCubeCreatePage(parent: SparkCubeTab)
   private def checkCacheAction(
       request: HttpServletRequest,
       tableOrView: Seq[TableOrView]): Seq[Node] = {
-    val cacheType = UIUtils.stripXSS(request.getParameter("cacheType"))
-    val createCache = UIUtils.stripXSS(request.getParameter("createCache"))
+    val cacheType = request.getParameter("cacheType")
+    val createCache = request.getParameter("createCache")
     if (cacheType == null || createCache != null) {
       Nil
     } else {
       var popTitle: String = null
-      val tableId = UIUtils.stripXSS(request.getParameter("tableId")).toInt
+      val tableId = request.getParameter("tableId").toInt
       val db = tableOrView(tableId).dataBase
       val table = tableOrView(tableId).tableName
       val fields = tableOrView(tableId).fields
@@ -123,7 +123,6 @@ class SparkCubeCreatePage(parent: SparkCubeTab)
           <option>MIN</option>
           <option>AVERAGE</option>
           <option>PRE_COUNT_DISTINCT</option>
-          <option>PRE_APPROX_COUNT_DISTINCT</option>
         </select>
         <button class="btn btn-info btn-mini" id="" onclick="addMeasure()">+</button>
         <button class="btn btn-info btn-mini" id="" onclick="removeClick(this)">-</button>

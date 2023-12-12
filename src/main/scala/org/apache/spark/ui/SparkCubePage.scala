@@ -41,10 +41,10 @@ class SparkCubePage(parent: SparkCubeTab)
   override def render(request: HttpServletRequest): Seq[Node] = {
 
     val cacheManager = parent.sharedState.cubeManager
-    val action = UIUtils.stripXSS(request.getParameter("action"))
+    val action = request.getParameter("action")
     if (action != null && action.nonEmpty) {
       if (action == "drop") {
-        val parameterCacheId = UIUtils.stripXSS(request.getParameter("cacheId"))
+        val parameterCacheId = request.getParameter("cacheId")
         require(parameterCacheId != null && parameterCacheId.nonEmpty, "Missing cache id parameter")
         val cacheId = CacheIdentifier(parameterCacheId)
         cacheManager.dropCache(sparkSession, cacheId)

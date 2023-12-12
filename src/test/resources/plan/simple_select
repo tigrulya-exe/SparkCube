@@ -1,0 +1,4 @@
+Project [num_count#34L AS num_count#34L]
++- Project [num_count#38L AS num_count#34L]
+   +- Project [group#35 AS group#37, num_count#36L AS num_count#38L]
+      +- Relation [group#35,num_count#36L] orc

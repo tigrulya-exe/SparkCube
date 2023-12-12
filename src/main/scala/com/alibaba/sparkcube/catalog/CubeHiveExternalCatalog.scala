@@ -20,7 +20,6 @@ package com.alibaba.sparkcube.catalog
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable, ExternalCatalog}
 
 import com.alibaba.sparkcube.optimizer._
@@ -31,12 +30,6 @@ import com.alibaba.sparkcube.optimizer._
  */
 class CubeHiveExternalCatalog(
     hiveCatalog: ExternalCatalog) extends CubeExternalCatalog {
-
-  protected def requireTableExists(db: String, table: String): Unit = {
-    if (!hiveCatalog.tableExists(db, table)) {
-      throw new NoSuchTableException(db = db, table = table)
-    }
-  }
 
   override def listSparkCubes(db: String): Seq[CatalogTable] = {
     hiveCatalog.listTables(db).map(t =>
@@ -49,8 +42,11 @@ class CubeHiveExternalCatalog(
   }
 
   override def isCached(db: String, mv: String): Boolean = {
-    requireTableExists(db, mv)
-    propertiesToCacheInfo(hiveCatalog.getTable(db, mv).properties).nonEmpty
+    if (hiveCatalog.tableExists(db, mv)) {
+      propertiesToCacheInfo(hiveCatalog.getTable(db, mv).properties).nonEmpty
+    } else {
+      false
+    }
   }
 
   private def cacheInfoToProperties(cacheInfo: Option[CacheInfo]): Map[String, String] = {

@@ -16,6 +16,8 @@
  */
 
 $(function() {
+    $('#mymodal-data').toggle();
+
     $("span.additional-dimension").click(function() {
         $(this).parent().find('input[type="checkbox"]').trigger('click');
     });

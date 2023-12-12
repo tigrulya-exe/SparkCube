@@ -17,13 +17,50 @@
 
 package com.alibaba.sparkcube.optimizer
 
-import org.apache.spark.SparkFunSuite
-import org.apache.spark.sql.{SparkAgent, SparkSession}
+import java.io.File
+
+import org.apache.spark.{SparkConf, SparkFunSuite}
+import org.apache.spark.sql._
+import org.apache.spark.sql.TestUtils.readPlanFromResources
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
+import org.apache.spark.sql.catalyst.dsl.expressions.{count, DslAttr, DslExpression, StringToAttributeConversionHelper}
+import org.apache.spark.sql.catalyst.dsl.plans.DslLogicalPlan
 import org.apache.spark.sql.catalyst.expressions.BoundReference
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Count, ReCountDistinct, Sum}
+import org.apache.spark.sql.catalyst.plans.Inner
+import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
+import org.apache.spark.sql.catalyst.rules.RuleExecutor
+import org.apache.spark.sql.execution.datasources.{CreateTable, LogicalRelation}
+import org.apache.spark.sql.internal.StaticSQLConf.WAREHOUSE_PATH
+import org.apache.spark.sql.sources.BaseRelation
+import org.apache.spark.sql.test.SharedSparkSessionBase
 import org.apache.spark.sql.types._
 
-class GenPlanFromCacheSuite extends SparkFunSuite {
+import com.alibaba.sparkcube.CacheBuildUtils
+import com.alibaba.sparkcube.optimizer.GenPlanFromCacheSuite.TMP_WAREHOUSE_DIR
+
+class GenPlanFromCacheSuite extends SparkFunSuite
+  with SharedSparkSessionBase
+  with CacheBuildUtils {
+
+  class TestExecutor(sparkSession: SparkSession) extends RuleExecutor[LogicalPlan] {
+    val batches: Seq[Batch] = Batch("GenPlanFromCache", Once,
+      GenPlanFromCache(sparkSession)) :: Nil
+  }
+
+  override protected def afterEach(): Unit = {
+    try {
+      spark.sessionState.catalog.reset()
+    } finally {
+      TestUtils.deleteDirectory(TMP_WAREHOUSE_DIR)
+      super.afterEach()
+    }
+  }
+
+  override protected def sparkConf: SparkConf = {
+    super.sparkConf.set(WAREHOUSE_PATH.key, TMP_WAREHOUSE_DIR.getPath)
+  }
 
   test("test getDataType") {
     val op = GenPlanFromCache(SparkSession.builder().master("local").getOrCreate())
@@ -52,4 +89,94 @@ class GenPlanFromCacheSuite extends SparkFunSuite {
       Seq(exp), "pre_count_distinct", promo = true).isInstanceOf[ReCountDistinct])
   }
 
+  test("test rewrite simple select") {
+    val table = "simple_select"
+    withTempDatabase { testDb =>
+      withSQLConf("spark.sql.cache.useDatabase" -> testDb) {
+        val relation = createTestTable(testDb, table)
+
+        createDefaultCache(testDb, table)
+
+        val logicalPlan = relation.select($"id", $"group", $"num")
+          .groupBy($"group")(count($"num").as("num_count"))
+          .analyze
+
+        val optimizedPlan = new TestExecutor(spark).execute(logicalPlan)
+        val expectedPlan = readPlanFromResources("simple_select")
+
+        assert(expectedPlan == optimizedPlan.treeString)
+      }
+    }
+  }
+
+  test("test rewrite join with alias") {
+    val table = "join_with_alias"
+    withTempDatabase { testDb =>
+      withSQLConf("spark.sql.cache.useDatabase" -> testDb) {
+        val relation = createTestTable(testDb, table)
+
+        createDefaultCache(testDb, table)
+
+        val aggregation = relation
+          .select($"id", $"group", $"num")
+          .groupBy($"group")($"group", count($"num").as("num_count"))
+          .subquery(Symbol("cached_table"))
+
+        val secondTable = LocalRelation($"join_id".int)
+
+        val join = secondTable
+          .select($"join_id")
+          .join(aggregation, Inner, Some($"join_id" === $"cached_table.group"))
+          .analyze
+
+        val optimizedPlan = new TestExecutor(spark).execute(join)
+        val expectedPlan = readPlanFromResources("join_with_alias")
+
+        assert(expectedPlan == optimizedPlan.treeString)
+      }
+    }
+  }
+
+  private def createTestTable(db: String, table: String): LogicalRelation = {
+    val localRelation = LocalRelation(
+      $"id".int,
+      $"group".string,
+      $"num".int
+    )
+
+    val catalogTable = createDummyCatalogTable(
+      TableIdentifier(table, Some(db)),
+      localRelation.schema
+    )
+    val plan = CreateTable(catalogTable, SaveMode.Ignore, None)
+    spark.sessionState.executePlan(plan).executedPlan.execute()
+
+    LogicalRelation(
+      TestRelation(spark.sqlContext, localRelation.schema),
+      catalogTable
+    )
+  }
+
+  private def createDummyCatalogTable(id: TableIdentifier, schema: StructType): CatalogTable = {
+    CatalogTable(
+      identifier = id,
+      tableType = CatalogTableType.MANAGED,
+      storage = CatalogStorageFormat(
+        locationUri = None,
+        inputFormat = None,
+        outputFormat = None,
+        serde = None,
+        compressed = false,
+        properties = Map()
+      ),
+      provider = Some("parquet"),
+      schema = schema
+    )
+  }
+
+  case class TestRelation(sqlContext: SQLContext, schema: StructType) extends BaseRelation
+}
+
+object GenPlanFromCacheSuite {
+  val TMP_WAREHOUSE_DIR: File = TestUtils.createTempDir("warehouse")
 }

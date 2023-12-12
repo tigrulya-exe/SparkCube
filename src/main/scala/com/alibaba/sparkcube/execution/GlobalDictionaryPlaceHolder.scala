@@ -28,7 +28,12 @@ case class GlobalDictionaryPlaceHolder(
 
   override def children: Seq[LogicalPlan] = Seq(child)
 
-  override def simpleString: String = {
+  override protected def withNewChildrenInternal(
+    newChildren: IndexedSeq[LogicalPlan]): LogicalPlan = {
+    copy(child = newChildren.head)
+  }
+
+  override def simpleString(maxFields: Int): String = {
     s"GlobalDictionary (${exprName}, ${output.mkString("[", ",", "]")})"
   }
 }
