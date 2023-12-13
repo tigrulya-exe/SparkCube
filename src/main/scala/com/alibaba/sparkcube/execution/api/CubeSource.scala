@@ -457,7 +457,7 @@ object SparkCubeSource {
 //    val holder: ServletHolder = new ServletHolder(new ServletContainer(config))
     val holder: ServletHolder = new ServletHolder(classOf[ServletContainer])
     holder.setInitParameter(ServerProperties.PROVIDER_CLASSNAMES,
-        "com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider")
+        "org.codehaus.jackson.jaxrs.JacksonJaxbJsonProvider")
     holder.setInitParameter(ServerProperties.PROVIDER_PACKAGES,
       "com.alibaba.sparkcube.execution.api")
     CacheRootFromServletContext.setCacheManager(jerseyContext, cacheManager)

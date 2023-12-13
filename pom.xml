@@ -7,13 +7,10 @@
     <groupId>com.alibaba</groupId>
     <artifactId>sparkcube</artifactId>
     <version>0.4.0-SNAPSHOT</version>
-
-    <repositories>
-        <repository>
-            <id>swoop-inc</id>
-            <url>https://dl.bintray.com/swoop-inc/maven/</url>
-        </repository>
-    </repositories>
+    <packaging>pom</packaging>
+    <modules>
+        <module>test</module>
+    </modules>
 
     <dependencies>
 
@@ -166,7 +163,7 @@
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
                 <!-- 3.3.1 won't work with zinc; fails to find javac from java.home -->
-                <version>3.2.2</version>
+                <version>4.8.0</version>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
